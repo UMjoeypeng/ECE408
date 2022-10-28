@@ -18,9 +18,21 @@
   
 __global__ void total(float *input, float *output, int len) {
   //@@ Load a segment of the input vector into shared memory
+  __shared__ float partialSum[2 * BLOCK_SIZE];
+  unsigned int t = threadIdx.x;
+  unsigned int start = 2 * blockIdx.x * blockDim.x;
+  partialSum[t] = input[start + t];
+  partialSum[blockDim.x + t] = input[start + blockDim.x + t];
   //@@ Traverse the reduction tree
+  for (unsigned int stride = blockDim.x; stride >= 1; stride /= 2) 
+  {
+    __syncthreads();
+    if (t < stride)
+      partialSum[t] += partialSum[t+stride];
+  }
   //@@ Write the computed sum of the block to the output vector at the
   //@@ correct index
+  output[blockIdx.x] = partialSum[0];
 }
 
 int main(int argc, char **argv) {
@@ -51,15 +63,18 @@ int main(int argc, char **argv) {
 
   wbTime_start(GPU, "Allocating GPU memory.");
   //@@ Allocate GPU memory here
-
+  int size_input = numInputElements * sizeof(float);
+  int size_output = numOutputElements * sizeof(float);
+  cudaMalloc((void **)&deviceInput, size_input);
+  cudaMalloc((void **)&deviceOutput, size_output);
   wbTime_stop(GPU, "Allocating GPU memory.");
 
   wbTime_start(GPU, "Copying input memory to the GPU.");
   //@@ Copy memory to the GPU here
-
+  cudaMemcpy(deviceInput, hostInput, size_input, cudaMemcpyHostToDevice);
   wbTime_stop(GPU, "Copying input memory to the GPU.");
   //@@ Initialize the grid and block dimensions here
-
+  total<<<ceil(numInputElements / (2*(float) BLOCK_SIZE)), BLOCK_SIZE>>>(deviceInput, deviceOutput, numInputElements);
   wbTime_start(Compute, "Performing CUDA computation");
   //@@ Launch the GPU Kernel here
 
@@ -68,7 +83,7 @@ int main(int argc, char **argv) {
 
   wbTime_start(Copy, "Copying output memory to the CPU");
   //@@ Copy the GPU memory back to the CPU here
-
+  cudaMemcpy(hostOutput, deviceOutput, size_output, cudaMemcpyDeviceToHost);
   wbTime_stop(Copy, "Copying output memory to the CPU");
 
   /***********************************************************************
@@ -83,7 +98,8 @@ int main(int argc, char **argv) {
 
   wbTime_start(GPU, "Freeing GPU Memory");
   //@@ Free the GPU memory here
-
+  cudaFree(deviceInput);
+  cudaFree(deviceOutput);
   wbTime_stop(GPU, "Freeing GPU Memory");
 
   wbSolution(args, hostOutput, 1);
