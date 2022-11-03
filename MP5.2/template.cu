@@ -18,12 +18,40 @@
     }                                                                     \
   } while (0)
 
+__global__ void copy(float *input, float *buffer, int len){
+  int i = blockIdx.x * blockDim.x + threadIdx.x;
+  if(i < len) {buffer[i] = input[i];}
+}
+
+__global__ void total_whole(float *input, float *buffer, int len, int stride){
+  int i = blockIdx.x * blockDim.x + threadIdx.x;
+
+  if(blockIdx.x >= stride && i < len) input[i] += buffer[(blockIdx.x - stride) * BLOCK_SIZE + BLOCK_SIZE - 1];
+  // if(blockIdx.x >= stride && i < len) input[i] += ps[blockIdx.x - stride];
+  __syncthreads();
+  if(i < len) {buffer[i] = input[i];}
+}
+
+
 __global__ void scan(float *input, float *output, int len) {
   //@@ Modify the body of this function to complete the functionality of
   //@@ the scan on the device
   //@@ You may need multiple kernel calls; write your kernels before this
   //@@ function and call them from the host
+  __shared__ float XY[BLOCK_SIZE];
+  int i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i < len) {
+    XY[threadIdx.x] = input[i]; 
+  }
+  for (unsigned int stride = 1; stride < blockDim.x; stride *= 2) {
+    __syncthreads();
+    if (threadIdx.x >= stride) XY[threadIdx.x] += XY[threadIdx.x - stride];
+  }
+
+  output[i] = XY[threadIdx.x];
+
 }
+
 
 int main(int argc, char **argv) {
   wbArg_t args;
@@ -31,6 +59,7 @@ int main(int argc, char **argv) {
   float *hostOutput; // The output list
   float *deviceInput;
   float *deviceOutput;
+  float *deviceBuffer;
   int numElements; // number of elements in the list
 
   args = wbArg_read(argc, argv);
@@ -46,6 +75,7 @@ int main(int argc, char **argv) {
   wbTime_start(GPU, "Allocating GPU memory.");
   wbCheck(cudaMalloc((void **)&deviceInput, numElements * sizeof(float)));
   wbCheck(cudaMalloc((void **)&deviceOutput, numElements * sizeof(float)));
+  wbCheck(cudaMalloc((void **)&deviceBuffer, numElements * sizeof(float)));
   wbTime_stop(GPU, "Allocating GPU memory.");
 
   wbTime_start(GPU, "Clearing output memory.");
@@ -62,8 +92,16 @@ int main(int argc, char **argv) {
   wbTime_start(Compute, "Performing CUDA computation");
   //@@ Modify this to complete the functionality of the scan
   //@@ on the deivce
-
+  scan<<<ceil(numElements / (float)BLOCK_SIZE), BLOCK_SIZE>>>(deviceInput, deviceOutput, numElements);
   cudaDeviceSynchronize();
+  copy<<<ceil(numElements / (float)BLOCK_SIZE), BLOCK_SIZE>>>(deviceOutput, deviceBuffer, numElements);
+  cudaDeviceSynchronize();
+  for(int stride = 1; stride < ceil(numElements / (float)BLOCK_SIZE); stride *= 2){
+    total_whole<<<ceil(numElements / (float)BLOCK_SIZE), BLOCK_SIZE>>>(deviceOutput, deviceBuffer, numElements, stride);
+  }
+  // total_scan<<<ceil(numElements / (float)BLOCK_SIZE), BLOCK_SIZE>>>(deviceOutput, deviceBuffer, numElements);
+  cudaDeviceSynchronize();
+
   wbTime_stop(Compute, "Performing CUDA computation");
 
   wbTime_start(Copy, "Copying output memory to the CPU");
@@ -74,6 +112,7 @@ int main(int argc, char **argv) {
   wbTime_start(GPU, "Freeing GPU Memory");
   cudaFree(deviceInput);
   cudaFree(deviceOutput);
+  cudaFree(deviceBuffer);
   wbTime_stop(GPU, "Freeing GPU Memory");
 
   wbSolution(args, hostOutput, numElements);
