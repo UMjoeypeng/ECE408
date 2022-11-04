@@ -4,7 +4,7 @@
 
 
 #define TILE_WIDTH 16
-#define TILE_SIZE 256
+// #define TILE_SIZE 256
 
 __global__ void conv_forward_kernel(float *output, const float *input, const float *mask, const int Batch, const int Map_out, const int Channel, const int Height, const int Width, const int K)
 {
@@ -55,8 +55,8 @@ __global__ void conv_forward_kernel(float *output, const float *input, const flo
     m = blockIdx.y;
     h0 = threadIdx.x;
     w0 = threadIdx.y;
-    h_base = (blockIdx.z / W_grid) * TILE_SIZE;
-    w_base = (blockIdx.z % W_grid) * TILE_SIZE;
+    h_base = (blockIdx.z / W_grid) * TILE_WIDTH;
+    w_base = (blockIdx.z % W_grid) * TILE_WIDTH;
     h = h_base + h0;
     w = w_base + w0;
 
@@ -65,12 +65,14 @@ __global__ void conv_forward_kernel(float *output, const float *input, const flo
     for (c = 0; c < Channel; c++) {
         if((h0 < K) && (w0 < K)){
             W_shared[h0 * K + w0] = mask_4d(m, c, h0, w0);
-            __syncthreads();
         }
+        __syncthreads();
+        // printf("wqq\n");
         for(i = h; i < h_base + X_tile_width; i += TILE_WIDTH) {
             for(j = w; j < w_base + X_tile_width; j += TILE_WIDTH){
+                // printf("%d %d\n", i, j);
                 if(i < Height && j < Width) {
-                    X_shared[(i - h_base) * X_tile_width + j - w_base] = in_4d(n, c, h, w);
+                    X_shared[(i - h_base) * X_tile_width + j - w_base] = in_4d(n, c, i, j);
                 }
                 else {
                     X_shared[(i - h_base) * X_tile_width + j - w_base] = 0;
@@ -79,12 +81,14 @@ __global__ void conv_forward_kernel(float *output, const float *input, const flo
         }
 
         __syncthreads();
+        // printf("qwq\n");
         for(p = 0; p < K; p++){
             for(q = 0; q < K; q++){
-                acc += X_shared[(h + p) * X_tile_width + w + q] * W_shared[p * K + q];
+                acc += X_shared[(h0 + p) * X_tile_width + w0 + q] * W_shared[p * K + q];
             }
         }
         __syncthreads();
+        // printf("qqq\n");
     }
     if(n < Batch && m < Map_out && h < Height_out && w < Width_out){
         out_4d(n, m, h, w) = acc;
@@ -136,6 +140,7 @@ __host__ void GPUInterface::conv_forward_gpu(float *device_output, const float *
     dim3 gridDim(Batch, Map_out, Z);
     size_t shmem_size = sizeof(float) * ((TILE_WIDTH + K - 1) * (TILE_WIDTH + K - 1) + K * K);
     conv_forward_kernel<<<gridDim, blockDim, shmem_size>>>(device_output, device_input, device_mask, Batch, Map_out, Channel, Height, Width, K);
+    cudaDeviceSynchronize();
 }
 
 
@@ -146,9 +151,9 @@ __host__ void GPUInterface::conv_forward_gpu_epilog(float *host_output, float *d
     const int Width_out = Width - K + 1;
     cudaMemcpy(host_output, device_output, (Batch * Map_out * Height_out * Width_out) * sizeof(float), cudaMemcpyDeviceToHost);
     // Free device memory
-    free(device_output);
-    free(device_input);
-    free(device_mask);
+    cudaFree(device_output);
+    cudaFree(device_input);
+    cudaFree(device_mask);
 }
 
 
