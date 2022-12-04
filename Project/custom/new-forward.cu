@@ -3,14 +3,14 @@
 
 #include "gpu-new-forward.h"
 
-#define TILE_WIDTH 16
+#define TILE_WIDTH 4
 // #define TILE_SIZE 256
 
 __global__ void conv_forward_kernel(float *output, const float *input,
                                     const float *mask, const int Batch,
                                     const int Map_out, const int Channel,
                                     const int Height, const int Width,
-                                    const int K, const int tile_size) {
+                                    const int K, int tile_size) {
     /*
     Modify this function to implement the forward pass described in Chapter 16.
     We have added an additional dimension to the tensors to support an entire
@@ -28,8 +28,8 @@ __global__ void conv_forward_kernel(float *output, const float *input,
     K - kernel height and width (K x K)
     */
 
-    const int Height_out = Height - K + 1;
-    const int Width_out = Width - K + 1;
+    // const int Height_out = Height - K + 1;
+    // const int Width_out = Width - K + 1;
     // (void)Height_out; // silence declared but never referenced warning.
     // remove this line when you start working (void)Width_out; // silence
     // declared but never referenced warning. remove this line when you start
@@ -51,9 +51,9 @@ __global__ void conv_forward_kernel(float *output, const float *input,
     // Insert your GPU convolution kernel code here
     int W_out = Width - K + 1;
     int H_out = Height - K + 1;
-    
-    __shared__ float input_tile[tile_size][tile_size][tile_size];
-    __shared__ float mask_tile[tile_size][tile_size][tile_size];
+    int tile_size = TILE_WIDTH;
+    __shared__ float input_tile[TILE_WIDTH][TILE_WIDTH][TILE_WIDTH];
+    __shared__ float mask_tile[TILE_WIDTH][TILE_WIDTH][TILE_WIDTH];
 
     int unroll_mask_width = Channel * K * K;
     int unroll_mask_height = Map_out;
@@ -62,9 +62,9 @@ __global__ void conv_forward_kernel(float *output, const float *input,
 
     int tx = threadIdx.x, ty = threadIdx.y, tz = threadIdx.z;
 
-    int x = blockIdx.x * tile_size + x; // width & height
-    int y = blockIdx.y * tile_size + y; // Output channel
-    int z = blockIdx.z * tile_size + z; // Batch
+    int x = blockIdx.x * tile_size + tx; // width & height
+    int y = blockIdx.y * tile_size + ty; // Output channel
+    int z = blockIdx.z * tile_size + tz; // Batch
 
     int h_out = x / W_out;  // Which pixel in the output image
     int w_out = x % W_out;
@@ -94,8 +94,8 @@ __global__ void conv_forward_kernel(float *output, const float *input,
 
             __syncthreads();
 
-            for(int j = 0; j< tile_size;j++){
-                ans += mask_tile[tz][ty][k] * input_mask[tz][tx][k];
+            for(int k = 0; k< tile_size;k++){
+                ans += mask_tile[tz][ty][k] * input_tile[tz][tx][k];
             }
             __syncthreads();
         }
@@ -150,20 +150,15 @@ __host__ void GPUInterface::conv_forward_gpu(
     int W_out = Width - K + 1;
     int H_out = Height - K + 1;
 
-    int W_unroll = Channel * K * K;
-    int H_unroll = H_out * W_out;
-    float *X_unrolled;
-    cudaMalloc((void **)X_unrolled, H_unroll * W_unroll * sizeof(float));
+    // int unroll_mask_width = Channel * K * K;
+    int unroll_mask_height = Map_out;
+    int unroll_input_width = H_out * W_out;
+    // int unroll_input_height = Channel * K * K;
+    int tile_size = Map_out > 4 ? 8 : 4;
+    dim3 blockDim(tile_size, tile_size, tile_size);
+    dim3 dimGrid(ceil((1.0 * unroll_input_width) / tile_size), ceil((1.0 * unroll_mask_height) / tile_size), ceil((1.0 *Batch)/ tile_size));
 
-    int num_threads_unroll = Channel * H_out * W_out;
-    int num_blocks_unroll = ceil(num_threads_unroll / 1024);
-    unroll_kernel<<<num_blocks_unroll, 1024>>>(Batch, Channel, Height, Width, K,
-                                               *device_input, *X_unrolled);
-    cudaDeviceSynchronize();
-
-    
-
-
+    conv_forward_kernel<<<gridDim, blockDim>>>(device_output, device_input, device_mask, Batch, Map_out, Channel, Height, Width, K, tile_size);
     
 
 
