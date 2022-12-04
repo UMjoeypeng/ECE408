@@ -51,7 +51,6 @@ __global__ void conv_forward_kernel(float *output, const float *input,
     // Insert your GPU convolution kernel code here
     int W_out = Width - K + 1;
     int H_out = Height - K + 1;
-    int tile_size = TILE_WIDTH;
     __shared__ float input_tile[TILE_WIDTH][TILE_WIDTH][TILE_WIDTH];
     __shared__ float mask_tile[TILE_WIDTH][TILE_WIDTH][TILE_WIDTH];
 
@@ -77,8 +76,8 @@ __global__ void conv_forward_kernel(float *output, const float *input,
         for(int i = 0; i < ceil((float)unroll_mask_width / (float)tile_size); i++){
             int tile_x = i * tile_size + tx;
             int tile_y = i * tile_size + ty;
-            int p = (tile_x / (K*K)) / K;
-            int q = (tile_x / (K*K)) % K;
+            int p = (tile_y % (K*K)) / K;
+            int q = (tile_y % (K*K)) % K;
 
             if(y < unroll_mask_height && tile_y < unroll_mask_height){
                 mask_tile[tz][ty][tx] = mask[y*Channel * K * K+tile_x];
@@ -87,15 +86,15 @@ __global__ void conv_forward_kernel(float *output, const float *input,
             }
 
             if(tile_y < unroll_input_height && x < unroll_input_width){
-                input_tile[tz][tx][ty] = in_4d(z, tile_x / (K * K), h_out + p, w_out + q);
+                input_tile[tz][ty][tx] = in_4d(z, tile_y / (K * K), h_out + p, w_out + q);
             } else {
-                input_tile[tz][tx][ty] = 0;
+                input_tile[tz][ty][tx] = 0;
             }
 
             __syncthreads();
 
             for(int k = 0; k< tile_size;k++){
-                ans += mask_tile[tz][ty][k] * input_tile[tz][tx][k];
+                ans += mask_tile[tz][ty][k] * input_tile[tz][k][tx];
             }
             __syncthreads();
         }
@@ -154,9 +153,10 @@ __host__ void GPUInterface::conv_forward_gpu(
     int unroll_mask_height = Map_out;
     int unroll_input_width = H_out * W_out;
     // int unroll_input_height = Channel * K * K;
-    int tile_size = Map_out > 4 ? 8 : 4;
+    // int tile_size = Map_out > 4 ? 8 : 4;
+    int tile_size = 4;
     dim3 blockDim(tile_size, tile_size, tile_size);
-    dim3 dimGrid(ceil((1.0 * unroll_input_width) / tile_size), ceil((1.0 * unroll_mask_height) / tile_size), ceil((1.0 *Batch)/ tile_size));
+    dim3 gridDim(ceil((1.0 * unroll_input_width) / tile_size), ceil((1.0 * unroll_mask_height) / tile_size), ceil((1.0 * Batch)/ tile_size));
 
     conv_forward_kernel<<<gridDim, blockDim>>>(device_output, device_input, device_mask, Batch, Map_out, Channel, Height, Width, K, tile_size);
     
